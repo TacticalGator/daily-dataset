@@ -25,7 +25,7 @@ jobs:
           -o downloads/osm_surveillance_cam.json
 
       - name: Upload as artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: daily-files
           path: downloads/
