@@ -1,31 +1,42 @@
-name: Daily File Download
+name: Daily Data Release
 
 on:
   schedule:
-    - cron: '0 6 * * *' # Runs daily at 06:00 UTC
-  workflow_dispatch: # Manual trigger
+    - cron: "0 6 * * *" # runs every day at 06:00 UTC
+  workflow_dispatch: # manual trigger if needed
 
 jobs:
-  download:
+  build-and-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Create download folder
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Prepare download folder
         run: mkdir -p downloads
 
-      - name: OpenCellid
+      - name: Download OpenCellID
         env:
           API_KEY: ${{ secrets.OPENCELLID }}
         run: |
           curl -L "https://opencellid.org/ocid/downloads?token=$API_KEY&type=full&file=cell_towers.csv.gz" \
                -o downloads/cell_towers.csv.gz
 
-      - name: OSM Surveillance Camera
+      - name: Download OSM Surveillance Camera
         run: |
           curl -L "http://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A3600%5D%3B%28node%5B%22man_made%22%3D%22surveillance%22%5D%3Bnode%5B%22surveillance%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22surveillance%22%5D%3Bnode%5B%22camera%22%5D%3Bnode%5B%22highway%22%3D%22speed_camera%22%5D%3Bnode%5B%22man_made%22%3D%22speed_camera%22%5D%3Bnode%5B%22device%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22cctv%22%3D%22yes%22%5D%3B%29%3Bout%20meta%3B" \
-          -o downloads/osm_surveillance_cam.json
+               -o downloads/osm_surveillance_cam.json
 
-      - name: Upload as artifact
-        uses: actions/upload-artifact@v4
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
         with:
-          name: daily-files
-          path: downloads/
+          tag_name: daily-latest
+          name: "Daily Dataset (latest)"
+          body: "Automatically updated every day at 06:00 UTC."
+          draft: false
+          prerelease: false
+          files: |
+            downloads/cell_towers.csv.gz
+            downloads/osm_surveillance_cam.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
