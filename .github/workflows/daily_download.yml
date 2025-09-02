@@ -39,7 +39,7 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            downloads/test1
-            downloads/test2
+            downloads/cell_towers.csv.gz
+            downloads/osm_surveillance_cam.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
