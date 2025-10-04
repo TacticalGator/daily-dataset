@@ -27,8 +27,61 @@ jobs:
 
       - name: Download OSM Surveillance Camera
         run: |
-          curl -L "http://overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A3600%5D%3B%28node%5B%22man_made%22%3D%22surveillance%22%5D%3Bnode%5B%22surveillance%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22surveillance%22%5D%3Bnode%5B%22camera%22%5D%3Bnode%5B%22highway%22%3D%22speed_camera%22%5D%3Bnode%5B%22man_made%22%3D%22speed_camera%22%5D%3Bnode%5B%22device%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22cctv%22%3D%22yes%22%5D%3B%29%3Bout%20meta%3B" \
-               -o downloads/osm_surveillance_cam.json
+          #!/bin/bash
+          set -e
+
+          DOWNLOAD_URLS=(
+            "http://overpass-api.de/api/interpreter"
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+            "https://overpass.openstreetmap.ru/api/interpreter"
+            "https://overpass.private.coffee/api/interpreter"
+            "https://overpass.osm.jp/api/interpreter"
+          )
+
+          QUERY="%5Bout%3Ajson%5D%5Btimeout%3A3600%5D%3B%28node%5B%22man_made%22%3D%22surveillance%22%5D%3Bnode%5B%22surveillance%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22surveillance%22%5D%3Bnode%5B%22camera%22%5D%3Bnode%5B%22highway%22%3D%22speed_camera%22%5D%3Bnode%5B%22man_made%22%3D%22speed_camera%22%5D%3Bnode%5B%22device%3Atype%22%3D%22camera%22%5D%3Bnode%5B%22cctv%22%3D%22yes%22%5D%3B%29%3Bout%20meta%3B"
+
+          THRESHOLD=$((150 * 1024 * 1024)) # 150MB
+          SUCCESS=0
+
+          for URL in "${DOWNLOAD_URLS[@]}"; do
+            echo "Trying $URL..."
+            ATTEMPT=1
+
+            while [ $ATTEMPT -le 2 ]; do
+              FILE="downloads/osm_surveillance_cam.json"
+              rm -f "$FILE"
+              START_TIME=$(date +%s)
+
+              # download
+              curl -L --max-time 3600 "$URL?data=$QUERY" -o "$FILE" || true
+
+              END_TIME=$(date +%s)
+              DURATION=$((END_TIME - START_TIME))
+
+              FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+
+              # check if file is valid
+              if [[ $FILE_SIZE -ge $THRESHOLD ]]; then
+                echo "Download succeeded: $FILE_SIZE bytes"
+                SUCCESS=1
+                break 2
+              fi
+
+              # check for fast failure (<5min)
+              if [[ $ATTEMPT -eq 1 && $DURATION -lt 300 ]]; then
+                echo "Fast failure detected, retrying once on same instance..."
+                ATTEMPT=$((ATTEMPT + 1))
+              else
+                echo "File too small ($FILE_SIZE bytes) or slow failure, moving to next instance..."
+                break
+              fi
+            done
+          done
+
+          if [[ $SUCCESS -ne 1 ]]; then
+            echo "All instances failed or returned too small files."
+            exit 1
+          fi
 
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
