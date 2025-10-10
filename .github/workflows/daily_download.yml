@@ -82,7 +82,17 @@ jobs:
             echo "All instances failed or returned too small files."
             exit 1
           fi
+          
+      - name: Download OSM Surveillance Camera
+        run: |
+          #!/bin/bash
+          set -e
+          echo "📡 Running submarine cable ingestor..."
+          
+          python3 scripts/submarine_cable_ingestor.py
 
+          mv cable-geo-enriched.json downloads/
+          
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
         with:
@@ -94,5 +104,6 @@ jobs:
           files: |
             downloads/cell_towers.csv.gz
             downloads/osm_surveillance_cam.json
+            downloads/cable-geo-enriched.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
