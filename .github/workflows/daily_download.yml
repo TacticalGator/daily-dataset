@@ -88,10 +88,13 @@ jobs:
           #!/bin/bash
           set -e
           echo "📡 Running submarine cable ingestor..."
-          
           python3 scripts/submarine_cable_ingestor.py
-
           mv cable-geo-enriched.json downloads/
+
+      - name: Download Terrestrial Cable
+        run: |
+          curl -L "https://bbmaps.itu.int/geoserver/ITU/ows?service=WFS&request=GetFeature&typeName=ITU:trx_public_2&outputFormat=application/json" \
+               -o downloads/trx.json
           
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
@@ -105,5 +108,6 @@ jobs:
             downloads/cell_towers.csv.gz
             downloads/osm_surveillance_cam.json
             downloads/cable-geo-enriched.json
+            downloads/trx.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
