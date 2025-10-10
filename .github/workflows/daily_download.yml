@@ -83,7 +83,7 @@ jobs:
             exit 1
           fi
           
-      - name: Download OSM Surveillance Camera
+      - name: Download Submarine Cable
         run: |
           #!/bin/bash
           set -e
