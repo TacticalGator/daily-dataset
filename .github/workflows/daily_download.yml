@@ -95,6 +95,11 @@ jobs:
         run: |
           curl -L "https://bbmaps.itu.int/geoserver/ITU/ows?service=WFS&request=GetFeature&typeName=ITU:trx_public_2&outputFormat=application/json" \
                -o downloads/trx.json
+               
+      - name: Download World Airports
+        run: |
+          curl -L "https://ourairports.com/airports.csv" \
+               -o downloads/airports.csv
           
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
@@ -109,5 +114,6 @@ jobs:
             downloads/osm_surveillance_cam.json
             downloads/cable-geo-enriched.json
             downloads/trx.json
+            downloads/airports.csv
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
