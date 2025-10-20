@@ -100,7 +100,26 @@ jobs:
         run: |
           curl -L "https://ourairports.com/airports.csv" \
                -o downloads/airports.csv
+      - name: Download Global Fishing Watch Ports
+        run: |
+          set -e
+          echo "Installing Node.js 22.x, Git, and vt2geojson..."
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y curl ca-certificates git
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+          npm install -g @mapbox/vt2geojson
           
+          echo "Downloading GFW Ports dataset..."
+          tmp=$(mktemp)
+          curl -sSL 'https://gateway.api.globalfishingwatch.org/v3/datasets/public-ports-v1/context-layers/0/0/0' \
+               -H 'Origin: https://globalfishingwatch.org' \
+               -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0' \
+               -H 'Referer: https://globalfishingwatch.org/map/' \
+               -o "$tmp"
+          vt2geojson "$tmp" -z 0 -x 0 -y 0 > downloads/ports.json
+  
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
         with:
