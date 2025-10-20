@@ -126,7 +126,7 @@ jobs:
         with:
           tag_name: daily-latest
           name: "Daily Dataset (latest)"
-          body: "Automatically updated every day at 06:00 UTC."
+          body: "Automatically updated every day at 02:00 UTC."
           draft: false
           prerelease: false
           files: |
