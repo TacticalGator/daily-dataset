@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: "0 2 * * *" # runs every day at 06:00 UTC
+    - cron: "0 2 * * *" # 0200Z
   workflow_dispatch: # manual trigger if needed
 
 jobs:
