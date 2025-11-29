@@ -126,7 +126,7 @@ jobs:
           PEERINGDB: ${{ secrets.PEERINGDB }}
         run: |
           echo "📡 Running PeeringDB ingestor..."
-          python3 scripts/peeringdb_ingestor.py
+          python3 scripts/peeringdb_datasets.py
   
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
