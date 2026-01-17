@@ -152,5 +152,14 @@ jobs:
             downloads/peeringdb_netfac.json
             downloads/peeringdb_ixfac.json
             downloads/peeringdb_carrierfac.json
+            downloads/osm_power_node_transformer.json
+            downloads/osm_power_node_switch.json
+            downloads/osm_power_node_terminal.json
+            downloads/osm_power_node_converter.json
+            downloads/osm_power_node_connection.json
+            downloads/osm_power_node_compensator.json
+            downloads/osm_power_node_inverter.json
+            downloads/osm_power_node_cable_distribution.json
+            downloads/osm_power_node_cable_distribution_cabinet.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
