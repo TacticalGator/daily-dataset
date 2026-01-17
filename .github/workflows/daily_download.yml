@@ -127,6 +127,12 @@ jobs:
         run: |
           echo "📡 Running PeeringDB ingestor..."
           python3 scripts/peeringdb_datasets.py
+
+      - name: Download OSM Power Nodes
+        run: |
+          set -e
+          echo "⚡ Running OSM Power Node ingestor..."
+          python3 scripts/osm_power_node_primary.py
   
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
