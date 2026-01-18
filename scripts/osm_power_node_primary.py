@@ -14,6 +14,7 @@ NODE_TAGS = [
     "terminal",
     "converter",
     "connection",
+    "transition",
     "compensator",
     "inverter",
     "cable_distribution",
