@@ -15,6 +15,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install requests osm2geojson
+
       - name: Prepare download folder
         run: mkdir -p downloads
 
@@ -82,7 +90,7 @@ jobs:
             echo "All instances failed or returned too small files."
             exit 1
           fi
-          
+
       - name: Download Submarine Cable
         run: |
           #!/bin/bash
@@ -95,7 +103,7 @@ jobs:
         run: |
           curl -L "https://bbmaps.itu.int/geoserver/ITU/ows?service=WFS&request=GetFeature&typeName=ITU:trx_public_2&outputFormat=application/json" \
                -o downloads/trx.json
-               
+
       - name: Download World Airports
         run: |
           curl -k -L "https://ourairports.com/airports.csv" \
@@ -111,7 +119,7 @@ jobs:
           curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
           sudo apt-get install -y nodejs
           sudo npm install -g @mapbox/vt2geojson
-          
+
           echo "Downloading GFW Ports dataset..."
           tmp=$(mktemp)
           curl -sSL 'https://gateway.api.globalfishingwatch.org/v3/datasets/public-ports-v1/context-layers/0/0/0' \
@@ -128,12 +136,12 @@ jobs:
           echo "📡 Running PeeringDB ingestor..."
           python3 scripts/peeringdb_datasets.py
 
-      - name: Download OSM Power Nodes
+      - name: Download OSM Power Infrastructure
         run: |
           set -e
-          echo "⚡ Running OSM Power Node ingestor..."
-          python3 scripts/osm_power_node_primary.py
-  
+          echo "⚡ Running OSM Power ingestor..."
+          python3 scripts/osm_power.py
+
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
         with:
@@ -158,14 +166,20 @@ jobs:
             downloads/peeringdb_netfac.json
             downloads/peeringdb_ixfac.json
             downloads/peeringdb_carrierfac.json
-            downloads/osm_power_node_transformer.json
-            downloads/osm_power_node_switch.json
-            downloads/osm_power_node_terminal.json
-            downloads/osm_power_node_converter.json
-            downloads/osm_power_node_connection.json
-            downloads/osm_power_node_compensator.json
-            downloads/osm_power_node_inverter.json
-            downloads/osm_power_node_cable_distribution.json
-            downloads/osm_power_node_cable_distribution_cabinet.json
+            downloads/osm_power_node_transformer.geojson
+            downloads/osm_power_node_switch.geojson
+            downloads/osm_power_node_terminal.geojson
+            downloads/osm_power_node_converter.geojson
+            downloads/osm_power_node_connection.geojson
+            downloads/osm_power_node_transition.geojson
+            downloads/osm_power_node_compensator.geojson
+            downloads/osm_power_node_inverter.geojson
+            downloads/osm_power_node_cable_distribution.geojson
+            downloads/osm_power_node_cable_distribution_cabinet.geojson
+            downloads/osm_power_way_line.geojson
+            downloads/osm_power_way_minor_line.geojson
+            downloads/osm_power_way_cable.geojson
+            downloads/osm_power_way_switchgear.geojson
+            downloads/osm_power_way_substation.geojson
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
