@@ -5,13 +5,21 @@ OSM Power Infrastructure Fetcher & Converter
 Fetches power infrastructure data (nodes and ways) from Overpass API and
 converts directly to GeoJSON without intermediate disk writes.
 Optimized for GitHub Actions free tier.
+
+Features:
+- Multi-endpoint retry with failover
+- Quadtree spatial tiling for large queries that timeout
+- Automatic retry with bbox subdivision on connection failures
+- Deduplication of elements crossing tile boundaries
+- Memory-efficient processing
 """
 
 import os
 import json
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from collections import defaultdict
 from osm2geojson import json2geojson
 
 # === CONFIG ===============================================================
@@ -50,59 +58,255 @@ OVERPASS_ENDPOINTS = [
 
 TIMEOUT = 3600  # seconds
 
+# Quadtree tiling config
+WORLD_BBOX = (-90, -180, 90, 180)  # (south, west, north, east)
+MAX_TILE_DEPTH = 3  # Max recursion: 1→4→16→64 tiles
+
 # === UTILITIES ============================================================
 
 
 def log(msg: str) -> None:
     """Print a timestamped log message."""
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"[{now}] {msg}", flush=True)
 
 
+def split_bbox(bbox: tuple[float, float, float, float]) -> list[tuple[float, float, float, float]]:
+    """Split bbox into 4 quadrants (SW, SE, NW, NE)."""
+    south, west, north, east = bbox
+    mid_lat = (south + north) / 2
+    mid_lon = (west + east) / 2
+    return [
+        (south, west, mid_lat, mid_lon),      # SW
+        (south, mid_lon, mid_lat, east),      # SE
+        (mid_lat, west, north, mid_lon),      # NW
+        (mid_lat, mid_lon, north, east),      # NE
+    ]
+
+
+def bbox_to_str(bbox: tuple[float, float, float, float]) -> str:
+    """Format bbox for logging."""
+    return f"({bbox[0]:.1f},{bbox[1]:.1f},{bbox[2]:.1f},{bbox[3]:.1f})"
+
+
+def is_retriable_error(error_msg: str) -> bool:
+    """Check if error should trigger retry/tiling."""
+    error_lower = error_msg.lower()
+    retriable_patterns = [
+        "remotedisconnected",
+        "connection aborted",
+        "connection reset",
+        "timeout",
+        "timed out",
+        "expecting value",  # Empty JSON response = server overloaded
+    ]
+    return any(pattern in error_lower for pattern in retriable_patterns)
+
+
+def deduplicate_elements(elements: list[dict], verbose: bool = False) -> list[dict]:
+    """
+    Remove duplicate elements by (type, id).
+    Ways crossing tile boundaries may appear in multiple tiles.
+    """
+    seen = {}
+    duplicate_count = 0
+
+    for elem in elements:
+        key = (elem.get("type"), elem.get("id"))
+        if key in seen:
+            duplicate_count += 1
+        else:
+            seen[key] = elem
+
+    if verbose and duplicate_count > 0:
+        log(f"    🔄 Deduplicated: removed {duplicate_count} duplicates, {len(seen):,} unique")
+
+    return list(seen.values())
+
+
+# === QUERY BUILDERS =======================================================
+
+
 def build_node_query(tag: str) -> str:
-    """Build Overpass QL query for node elements with a given power tag."""
+    """Build Overpass QL query for node elements."""
     return f'[out:json][timeout:{TIMEOUT}];node["power"="{tag}"];out meta;'
 
 
-def build_way_query(tag: str) -> str:
-    """Build Overpass QL query for way elements with a given power tag."""
-    return f'[out:json][timeout:{TIMEOUT}];way["power"="{tag}"];out geom;'
+def build_way_query(tag: str, bbox: tuple[float, float, float, float] | None = None) -> str:
+    """Build Overpass QL query for way elements."""
+    bbox_str = f"({bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]})" if bbox else ""
+    return f'[out:json][timeout:{TIMEOUT}];way["power"="{tag}"]{bbox_str};out geom;'
 
 
-def fetch_overpass(query: str) -> dict[str, Any] | None:
+# === FETCH LOGIC ==========================================================
+
+
+def fetch_single_endpoint(
+    query: str,
+    endpoint: str,
+) -> tuple[list[dict] | None, str | None, bool]:
     """
-    Try each Overpass endpoint until one returns valid data.
-    Returns raw OSM JSON dict or None if all endpoints fail.
+    Fetch from a single endpoint.
+
+    Returns: (elements, error_message, is_retriable)
+    - elements: list of OSM elements if successful
+    - error_message: error description if failed
+    - is_retriable: True if failure should trigger tiling
     """
-    for endpoint in OVERPASS_ENDPOINTS:
-        log(f"  🔗 Trying {endpoint}...")
+    try:
+        response = requests.post(
+            endpoint,
+            data={"data": query},
+            timeout=(30, TIMEOUT),
+        )
+
+        # HTTP error codes
+        if response.status_code == 429:
+            return None, "HTTP 429 (rate limited)", True
+
+        if response.status_code >= 500:
+            return None, f"HTTP {response.status_code} (server error)", True
+
+        if response.status_code != 200:
+            return None, f"HTTP {response.status_code}", False
+
+        # Parse JSON
         try:
-            response = requests.post(
-                endpoint,
-                data={"data": query},
-                timeout=TIMEOUT,
-            )
-
-            if response.status_code != 200:
-                log(f"    ⚡ HTTP {response.status_code}, skipping...")
-                continue
-
             data = response.json()
-            elements = data.get("elements", [])
-
-            if not elements:
-                log("    ⚠️ 0 elements returned, trying next...")
-                continue
-
-            log(f"    ✅ {len(elements):,} elements ({len(response.content) / 1024:.1f} KB)")
-            return data
-
-        except requests.exceptions.RequestException as e:
-            log(f"    ❌ Request failed: {e}")
         except json.JSONDecodeError as e:
-            log(f"    ❌ JSON decode error: {e}")
+            # Empty response typically means server timeout/overload
+            return None, f"JSON decode error: {e}", True
 
-    return None
+        elements = data.get("elements", [])
+        return elements, None, False
+
+    except requests.exceptions.Timeout as e:
+        return None, f"Timeout: {e}", True
+
+    except requests.exceptions.ConnectionError as e:
+        error_str = str(e)
+        return None, f"Connection error: {e}", is_retriable_error(error_str)
+
+    except requests.exceptions.RequestException as e:
+        return None, f"Request error: {e}", False
+
+
+def fetch_with_retry(query: str, label: str) -> tuple[list[dict] | None, bool]:
+    """
+    Try all endpoints in sequence.
+
+    Returns: (elements, should_tile)
+    - elements: list of OSM elements if any endpoint succeeded
+    - should_tile: True if all failures were retriable (should attempt tiling)
+    """
+    any_retriable = False
+
+    for endpoint in OVERPASS_ENDPOINTS:
+        log(f"    🔗 Trying {endpoint}...")
+
+        elements, error, is_retriable = fetch_single_endpoint(query, endpoint)
+
+        if elements is not None:
+            # Success - note that 0 elements is valid for regional tiles
+            log(f"      ✅ {len(elements):,} elements")
+            return elements, False
+
+        # Log the error
+        symbol = "⚡" if is_retriable else "❌"
+        log(f"      {symbol} {error}")
+
+        if is_retriable:
+            any_retriable = True
+
+    log(f"    ❌ All endpoints failed for '{label}'")
+    return None, any_retriable
+
+
+# === NODE FETCHING (simple, no tiling needed) =============================
+
+
+def fetch_nodes(tag: str) -> list[dict] | None:
+    """Fetch node data with multi-endpoint retry."""
+    query = build_node_query(tag)
+    elements, _ = fetch_with_retry(query, f"node:{tag}")
+    return elements
+
+
+# === WAY FETCHING (with tiling support) ===================================
+
+
+def fetch_ways_with_tiling(
+    tag: str,
+    bbox: tuple[float, float, float, float] = WORLD_BBOX,
+    depth: int = 0,
+) -> list[dict] | None:
+    """
+    Fetch way data with automatic quadtree tiling on failure.
+
+    On retriable failures (timeout, disconnect, 429, 5xx):
+    - Split bbox into 4 quadrants
+    - Recursively fetch each quadrant
+    - Merge and deduplicate results
+
+    Returns: list of OSM elements, or None if unrecoverable failure
+    """
+    indent = "  " * depth
+    label = f"way:{tag}"
+
+    # Log what we're fetching
+    if depth == 0:
+        # Global query (no bbox)
+        query = build_way_query(tag, None)
+    else:
+        log(f"{indent}📦 Tile depth={depth} bbox={bbox_to_str(bbox)}")
+        query = build_way_query(tag, bbox)
+
+    # Try all endpoints
+    elements, should_tile = fetch_with_retry(query, label)
+
+    if elements is not None:
+        return elements
+
+    # Check if we should attempt tiling
+    if not should_tile:
+        log(f"{indent}  ❌ Non-retriable failure, cannot tile")
+        return None
+
+    if depth >= MAX_TILE_DEPTH:
+        log(f"{indent}  ❌ Max tile depth ({MAX_TILE_DEPTH}) reached")
+        return None
+
+    # Quadtree subdivision
+    log(f"{indent}  🔀 Splitting into 4 quadrants (depth {depth} → {depth + 1})...")
+    quadrants = split_bbox(bbox)
+    quad_names = ["SW", "SE", "NW", "NE"]
+    all_elements = []
+
+    for i, quad_bbox in enumerate(quadrants):
+        log(f"{indent}  [{quad_names[i]}] ───────────────────")
+
+        quad_elements = fetch_ways_with_tiling(tag, quad_bbox, depth + 1)
+
+        if quad_elements is None:
+            log(f"{indent}  [{quad_names[i]}] ❌ Failed - aborting")
+            return None
+
+        log(f"{indent}  [{quad_names[i]}] ✅ {len(quad_elements):,} elements")
+        all_elements.extend(quad_elements)
+
+    # Deduplicate elements crossing tile boundaries
+    before_count = len(all_elements)
+    all_elements = deduplicate_elements(all_elements, verbose=True)
+    after_count = len(all_elements)
+
+    if before_count == after_count:
+        log(f"{indent}  📊 Merged: {after_count:,} elements (no duplicates)")
+    # else: deduplicate_elements already logged
+
+    return all_elements
+
+
+# === CONVERTERS ===========================================================
 
 
 def convert_to_geojson(osm_data: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +346,7 @@ def save_geojson(geojson: dict[str, Any], filepath: str) -> None:
 
 def process_node_tag(tag: str) -> bool:
     """
-    Pipeline for a node power tag (3 steps, no transformation):
+    Pipeline for a node power tag (3 steps):
       1. Fetch from Overpass API
       2. Convert to GeoJSON
       3. Save to disk
@@ -158,23 +362,30 @@ def process_node_tag(tag: str) -> bool:
 
     # Step 1: Fetch
     log(f"[1/3] Fetching '{label}' from Overpass API...")
-    query = build_node_query(tag)
-    osm_data = fetch_overpass(query)
+    elements = fetch_nodes(tag)
 
-    if osm_data is None:
-        log(f"  ❌ All endpoints failed for '{label}', skipping\n")
+    if elements is None:
+        log(f"  ❌ Failed to fetch '{label}'\n")
         return False
+
+    if not elements:
+        log(f"  ⚠️ No elements found for '{label}'\n")
+        return False
+
+    # Wrap in OSM JSON structure
+    osm_data = {"version": 0.6, "elements": elements}
+    del elements
 
     # Step 2: Convert
     log(f"[2/3] Converting to GeoJSON...")
     geojson = convert_to_geojson(osm_data)
-    del osm_data  # Free memory immediately
+    del osm_data
 
     # Step 3: Save
     feature_count = len(geojson.get("features", []))
     log(f"[3/3] Saving {feature_count:,} features → {output_file}")
     save_geojson(geojson, output_file)
-    del geojson  # Free memory before next iteration
+    del geojson
 
     log(f"  ✅ Done\n")
     return True
@@ -182,8 +393,8 @@ def process_node_tag(tag: str) -> bool:
 
 def process_way_tag(tag: str) -> bool:
     """
-    Pipeline for a way power tag (4 steps, with transformation):
-      1. Fetch from Overpass API
+    Pipeline for a way power tag (4 steps):
+      1. Fetch from Overpass API (with tiling fallback)
       2. Convert to GeoJSON
       3. Transform (clean properties)
       4. Save to disk
@@ -197,19 +408,28 @@ def process_way_tag(tag: str) -> bool:
     log(f"Processing '{label}'")
     log(f"{'=' * 60}")
 
-    # Step 1: Fetch
+    # Step 1: Fetch (with tiling fallback)
     log(f"[1/4] Fetching '{label}' from Overpass API...")
-    query = build_way_query(tag)
-    osm_data = fetch_overpass(query)
+    elements = fetch_ways_with_tiling(tag)
 
-    if osm_data is None:
-        log(f"  ❌ All endpoints failed for '{label}', skipping\n")
+    if elements is None:
+        log(f"  ❌ Failed to fetch '{label}' (all endpoints and tiling failed)\n")
         return False
+
+    if not elements:
+        log(f"  ⚠️ No elements found for '{label}'\n")
+        return False
+
+    log(f"  📊 Total: {len(elements):,} elements")
+
+    # Wrap in OSM JSON structure
+    osm_data = {"version": 0.6, "elements": elements}
+    del elements
 
     # Step 2: Convert
     log(f"[2/4] Converting to GeoJSON...")
     geojson = convert_to_geojson(osm_data)
-    del osm_data  # Free memory immediately
+    del osm_data
 
     # Step 3: Transform
     log(f"[3/4] Transforming (cleaning properties)...")
@@ -219,7 +439,7 @@ def process_way_tag(tag: str) -> bool:
     feature_count = len(geojson.get("features", []))
     log(f"[4/4] Saving {feature_count:,} features → {output_file}")
     save_geojson(geojson, output_file)
-    del geojson  # Free memory before next iteration
+    del geojson
 
     log(f"  ✅ Done\n")
     return True
@@ -235,11 +455,12 @@ def main() -> None:
     log("Starting OSM Power Infrastructure Pipeline")
     log(f"Node tags: {NODE_POWER_TAGS}")
     log(f"Way tags: {WAY_POWER_TAGS}")
-    log(f"Total: {total_tags} tags to process\n")
+    log(f"Total: {total_tags} tags to process")
+    log(f"Max tile depth: {MAX_TILE_DEPTH}\n")
 
     results = {"success": [], "failed": []}
 
-    # Process node-primary tags first (smaller datasets)
+    # Process node-primary tags first (smaller datasets, no tiling needed)
     log("=" * 60)
     log("PHASE 1: NODE-PRIMARY TAGS")
     log("=" * 60 + "\n")
@@ -250,7 +471,7 @@ def main() -> None:
         else:
             results["failed"].append(f"node:{tag}")
 
-    # Process way-primary tags (larger datasets)
+    # Process way-primary tags (larger datasets, may need tiling)
     log("=" * 60)
     log("PHASE 2: WAY-PRIMARY TAGS")
     log("=" * 60 + "\n")
@@ -268,6 +489,8 @@ def main() -> None:
     log(f"✅ Success: {len(results['success'])}/{total_tags}")
     if results["failed"]:
         log(f"❌ Failed: {results['failed']}")
+    else:
+        log("🎉 All tags processed successfully!")
 
 
 if __name__ == "__main__":
